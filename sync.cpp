@@ -16,6 +16,8 @@ namespace ohlano {
         MIN_AUTHOR{"Jonas Ohland"};
         MIN_RELATED{"pack, pak, metro, select, sel"};
 
+        /////////////////////// pipe
+
         typedef struct atom_pipe {
 
             typedef enum {
@@ -40,8 +42,6 @@ namespace ohlano {
                 type = t;
 
                 this->is_hot = _is_hot;
-
-                std::cout << "constructed : is_hot: " << ((is_hot) ? "true" : "false") << std::endl;
 
                 auto outlet_gen = [=](sync *_inst, std::string _name, std::string _type) -> unique_ptr<outlet<>> {
 
@@ -97,31 +97,58 @@ namespace ohlano {
             }
 
             atoms storage_;
+            atoms stage_;
+
             bool was_banged = false;
+            bool stage_ready = false;
 
-
-            void push(const atoms &input) {
-                if (type == BANG && !isHot()) {
-                    was_banged = true;
-                } else {
-                    storage_.clear();
-                    std::copy(input.begin(), input.end(), std::back_inserter(storage_));
-                }
+            void store_bang(){
+                was_banged = true;
             }
 
-            void let_out() {
-                if (type == BANG) {
-                    if (isHot()) {
+            void do_bang(){
+                if(isHot())
+                    outlet_->send("bang");
+                else
+                    if(was_banged) {
                         outlet_->send("bang");
-                    } else {
-                        if (was_banged) {
-                            was_banged = false;
-                            outlet_->send("bang");
-                        }
+                        was_banged = false;
                     }
+            }
 
+            void stage_content(atoms input){
+                stage_.clear();
+                std::copy(input.begin(), input.end(), std::back_inserter(stage_));
+                stage_ready = true;
+            }
+
+            void commit_content(){
+                storage_.clear();
+                std::copy(stage_.begin(), stage_.end(), std::back_inserter(storage_));
+                stage_ready = false;
+            }
+
+            void clear_stage(){
+                stage_ready = false;
+            }
+
+            void clear_storage(){
+                storage_.clear();
+            }
+
+            bool has_staged_content(){
+                return stage_ready;
+            }
+
+            void send_data(){
+                outlet_->send(storage_);
+            }
+
+            void revert() {
+                if (type == BANG) {
+                    was_banged = false;
                 } else {
-                    outlet_->send(storage_);
+                    clear_stage();
                 }
             }
 
@@ -129,11 +156,37 @@ namespace ohlano {
                 if (type == BANG) {
                     was_banged = false;
                 } else {
-                    storage_.clear();
+                    clear_stage();
+                    clear_storage();
+                }
+            }
+
+            void push(const atoms &input) {
+                if (type == BANG && !isHot()) {
+                    store_bang();
+                } else {
+                    stage_content(input);
+                }
+            }
+
+            void let_out() {
+
+                if (type == BANG) {
+
+                    do_bang();
+
+                } else {
+
+                    if(has_staged_content())
+                        commit_content();
+
+                    send_data();
                 }
             }
 
         } atom_pipe_t;
+
+        /////////////////////////// end pipe
 
         std::vector<atom_pipe_t> pipes;
 
@@ -267,9 +320,29 @@ namespace ohlano {
             return {};
         }
 
+        atoms handle_revert(const atoms &args, int inlet) {
+
+            if(!args.empty()){
+                if(args[0] == "all") {
+                    for (auto &pipe : pipes) {
+                        pipe.revert();
+                    }
+                }
+            } else {
+                pipes[inlet].revert();
+            }
+            return {};
+        }
+
         atoms handle_clear(const atoms &args, int inlet) {
-            for (auto &pipe : pipes) {
-                pipe.clear();
+            if(!args.empty()){
+                if(args[0] == "all") {
+                    for (auto &pipe : pipes) {
+                        pipe.clear();
+                    }
+                }
+            } else {
+                pipes[inlet].clear();
             }
             return {};
         }
@@ -285,6 +358,8 @@ namespace ohlano {
         message<> unmute_msg{this, "unmute", "unmute the output", std::bind(&sync::handle_unmute, this, _1, _2)};
 
         message<> clear_msg{this, "clear", "clear one or all pipes", std::bind(&sync::handle_clear, this, _1, _2)};
+        message<> revert_msg{this, "revert", "clear one or all pipes", std::bind(&sync::handle_revert, this, _1, _2)};
+
 
         message<> fire_msg{this, "fire", "fire all outlets", std::bind(&sync::fire_all, this, _1, _2)};
 
